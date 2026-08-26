@@ -946,6 +946,10 @@ async function getNextSequence(sequenceName) {
 app.get('/', (req, res) => {
   res.send('Hello, World!')
 })
-app.listen(process.env.PORT, () => {
-  console.log('Servidor rodando na porta ' + (process.env.PORT))
-})
+if (process.env.NODE_ENV !== "production") {
+  app.listen(process.env.PORT || 3000, () => {
+    console.log("Servidor rodando na porta " + (process.env.PORT || 3000));
+  });
+}
+
+export default app;
