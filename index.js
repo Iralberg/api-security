@@ -502,89 +502,199 @@ app.delete('/categories/:id', checkToken, authorize('admin'), async (req, res) =
 
 // filtro de faturamento
 app.get("/sales/summary", async (req, res) => {
-  try {
-    const { startDate, endDate } = req.query;
+    try {
+        const { startDate, endDate } = req.query;
 
-    if (!startDate || !endDate) {
-      return res.status(400).json({
-        message: "startDate e endDate são obrigatórios"
-      });
-    }
-
-    const start = new Date(`${startDate}T00:00:00`);
-    const end = new Date(`${endDate}T23:59:59.999`);
-
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      return res.status(400).json({
-        message: "Data inválida"
-      });
-    }
-
-    if (start > end) {
-      return res.status(400).json({
-        message: "A data inicial não pode ser maior que a data final"
-      });
-    }
-
-    const result = await Sale.aggregate([
-      {
-        $match: {
-          createdAt: {
-            $gte: start,
-            $lte: end
-          }
+        if (!startDate || !endDate) {
+            return res.status(400).json({
+                message: "startDate e endDate são obrigatórios"
+            });
         }
-      },
-      {
-        $group: {
-          _id: "$status",
-          total: {
-            $sum: "$total"
-          }
+
+        const start = new Date(`${startDate}T00:00:00`);
+        const end = new Date(`${endDate}T23:59:59.999`);
+
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+            return res.status(400).json({
+                message: "Data inválida"
+            });
         }
-      }
-    ]);
 
-    let faturamentoTotal = 0;
-    let recebido = 0;
-    let aReceber = 0;
-    let cancelado = 0;
+        if (start > end) {
+            return res.status(400).json({
+                message: "A data inicial não pode ser maior que a data final"
+            });
+        }
 
-    result.forEach((item) => {
-      if (item._id === "Pago") {
-        faturamentoTotal += item.total;
-        recebido += item.total;
-      }
+        const duration = end.getTime() - start.getTime();
 
-      if (item._id === "Pendente") {
-        faturamentoTotal += item.total;
-        aReceber += item.total;
-      }
+        const previousEnd = new Date(start.getTime() - 1);
 
-      if (item._id === "Cancelado") {
-        cancelado += item.total;
-      }
-    });
+        const previousStart = new Date(
+            start.getTime() - duration - 1
+        );
 
-    res.json({
-      periodo: {
-        startDate,
-        endDate
-      },
-      faturamentoTotal,
-      recebido,
-      aReceber,
-      cancelado
-    });
+        const getSummary = async (periodStart, periodEnd) => {
+            const result = await Sale.aggregate([
+                {
+                    $match: {
+                        createdAt: {
+                            $gte: periodStart,
+                            $lte: periodEnd
+                        }
+                    }
+                },
 
-  } catch (error) {
-    console.error(error);
+                {
+                    $group: {
+                        _id: null,
 
-    res.status(500).json({
-      message: "Erro ao buscar resumo financeiro",
-      error: error.message
-    });
-  }
+                        // TOTAL DE VENDAS
+                        totalVendas: {
+                            $sum: {
+                                $cond: [
+                                    { $ne: ["$status", "Cancelado"] },
+                                    1,
+                                    0
+                                ]
+                            }
+                        },
+
+                        faturamentoTotal: {
+                            $sum: {
+                                $cond: [
+                                    { $ne: ["$status", "Cancelado"] },
+                                    "$total",
+                                    0
+                                ]
+                            }
+                        },
+
+                        recebido: {
+                            $sum: {
+                                $cond: [
+                                    { $ne: ["$status", "Cancelado"] },
+                                    "$paidAmount",
+                                    0
+                                ]
+                            }
+                        },
+
+                        pendente: {
+                            $sum: {
+                                $cond: [
+                                    { $ne: ["$status", "Cancelado"] },
+                                    "$remainingAmount",
+                                    0
+                                ]
+                            }
+                        },
+
+                        cancelado: {
+                            $sum: {
+                                $cond: [
+                                    { $eq: ["$status", "Cancelado"] },
+                                    "$total",
+                                    0
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]);
+
+            return result[0] || {
+                totalVendas: 0,
+                faturamentoTotal: 0,
+                recebido: 0,
+                pendente: 0,
+                cancelado: 0
+            };
+        };
+
+        // Período atual
+        const atual = await getSummary(start, end);
+
+        // Período anterior
+        const anterior = await getSummary(
+            previousStart,
+            previousEnd
+        );
+
+        const calcularVariacao = (atual, anterior) => {
+            if (anterior === 0) {
+                return atual > 0 ? 100 : 0;
+            }
+
+            return Number(
+                (((atual - anterior) / anterior) * 100).toFixed(2)
+            );
+        };
+
+        res.json({
+            periodoAtual: {
+                startDate,
+                endDate
+            },
+
+            periodoAnterior: {
+                startDate: previousStart,
+                endDate: previousEnd
+            },
+
+            // ATUAL
+            totalVendas: atual.totalVendas,
+            faturamentoTotal: atual.faturamentoTotal,
+            recebido: atual.recebido,
+            pendente: atual.pendente,
+            cancelado: atual.cancelado,
+
+            // PERÍODO ANTERIOR
+            periodoAnteriorValores: {
+                totalVendas: anterior.totalVendas,
+                faturamentoTotal: anterior.faturamentoTotal,
+                recebido: anterior.recebido,
+                pendente: anterior.pendente,
+                cancelado: anterior.cancelado
+            },
+
+            // VARIAÇÕES
+            variacao: {
+                totalVendas: calcularVariacao(
+                    atual.totalVendas,
+                    anterior.totalVendas
+                ),
+
+                faturamentoTotal: calcularVariacao(
+                    atual.faturamentoTotal,
+                    anterior.faturamentoTotal
+                ),
+
+                recebido: calcularVariacao(
+                    atual.recebido,
+                    anterior.recebido
+                ),
+
+                pendente: calcularVariacao(
+                    atual.pendente,
+                    anterior.pendente
+                ),
+
+                cancelado: calcularVariacao(
+                    atual.cancelado,
+                    anterior.cancelado
+                )
+            }
+        });
+
+    } catch (error) {
+        console.error(error);
+
+        res.status(500).json({
+            message: "Erro ao buscar resumo financeiro",
+            error: error.message
+        });
+    }
 });
 
 //criar sale
