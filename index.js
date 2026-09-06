@@ -500,6 +500,92 @@ app.delete('/categories/:id', checkToken, authorize('admin'), async (req, res) =
   }
 });
 
+// filtro de faturamento
+app.get("/sales/summary", async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        message: "startDate e endDate são obrigatórios"
+      });
+    }
+
+    const start = new Date(`${startDate}T00:00:00`);
+    const end = new Date(`${endDate}T23:59:59.999`);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return res.status(400).json({
+        message: "Data inválida"
+      });
+    }
+
+    if (start > end) {
+      return res.status(400).json({
+        message: "A data inicial não pode ser maior que a data final"
+      });
+    }
+
+    const result = await Sale.aggregate([
+      {
+        $match: {
+          createdAt: {
+            $gte: start,
+            $lte: end
+          }
+        }
+      },
+      {
+        $group: {
+          _id: "$status",
+          total: {
+            $sum: "$total"
+          }
+        }
+      }
+    ]);
+
+    let faturamentoTotal = 0;
+    let recebido = 0;
+    let aReceber = 0;
+    let cancelado = 0;
+
+    result.forEach((item) => {
+      if (item._id === "Pago") {
+        faturamentoTotal += item.total;
+        recebido += item.total;
+      }
+
+      if (item._id === "Pendente") {
+        faturamentoTotal += item.total;
+        aReceber += item.total;
+      }
+
+      if (item._id === "Cancelado") {
+        cancelado += item.total;
+      }
+    });
+
+    res.json({
+      periodo: {
+        startDate,
+        endDate
+      },
+      faturamentoTotal,
+      recebido,
+      aReceber,
+      cancelado
+    });
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      message: "Erro ao buscar resumo financeiro",
+      error: error.message
+    });
+  }
+});
 
 //criar sale
 
@@ -676,7 +762,11 @@ app.post('/sales/:id/payments', async (req, res) => {
                 message: 'Não é possível adicionar pagamento a uma venda cancelada.'
             });
         }
-
+        if(sale.remainingAmount===0){
+          return res.status(400).json({
+            message: 'Esta venda já está paga.'
+          })
+        }
         if (amount > sale.remainingAmount) {
             return res.status(400).json({
                 message: 'O valor do pagamento é maior que o valor restante da venda.'
